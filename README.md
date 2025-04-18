@@ -58,6 +58,10 @@ python ollama_discord_bot.py
 *   `vijay`
 *   `batman`
 *   `catwoman`
+*   `harry`
+*   `ron`
+*   `hermione`
+*   `weasley_twins`
 
 (These are defined in the `BOT_ROLES` dictionary in the script).
 
