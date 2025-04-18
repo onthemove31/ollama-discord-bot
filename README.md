@@ -57,6 +57,7 @@ python ollama_discord_bot.py
 *   `ajith`
 *   `vijay`
 *   `batman`
+*   `catwoman`
 
 (These are defined in the `BOT_ROLES` dictionary in the script).
 
