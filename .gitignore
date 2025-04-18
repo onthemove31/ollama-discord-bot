@@ -1,0 +1,17 @@
+# Environment variables
+.env
+
+# Python cache
+__pycache__/
+*.pyc 
+
+# Gamification data
+gamification_data.json
+
+# Docker
+Dockerfile
+
+# GIF related
+download_gifs.py
+gif_downloader_requirements.txt
+gifs/ 
