@@ -62,6 +62,9 @@ python ollama_discord_bot.py
 *   `ron`
 *   `hermione`
 *   `weasley_twins`
+*   `taylor_swift`
+*   `trump`
+*   `putin`
 
 (These are defined in the `BOT_ROLES` dictionary in the script).
 

@@ -8,6 +8,7 @@ import json
 import os
 import re
 import uuid
+import yaml
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from urllib.parse import urlparse, urljoin
@@ -17,7 +18,7 @@ load_dotenv()
 
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID"))
-ALLOWED_USER_IDS = list(map(int, os.getenv("ALLOWED_USER_IDS").split(",")))
+ALLOWED_USER_IDS = list(map(int, os.getenv("ALLOWED_USER_IDS", "").split(","))) if os.getenv("ALLOWED_USER_IDS") else []
 
 OLLAMA_API_URL = os.getenv("OLLAMA_API_URL")
 OLLAMA_MODEL_NAME = os.getenv("OLLAMA_MODEL_NAME")
@@ -26,34 +27,65 @@ SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT")
 MAX_CONTEXT_LENGTH = int(os.getenv("MAX_CONTEXT_LENGTH", "10"))  # Maximum number of messages to keep per user
 
 # --- Bot Roles --- 
-DEFAULT_ROLE = "sarcastic_therapist"
-BOT_ROLES = {
-    "helpful_assistant": "You are a helpful and friendly assistant. Respond clearly and concisely.",
-    "sarcastic_therapist": os.getenv("SYSTEM_PROMPT"), # Use the existing one from .env
-    "comedian": "You are a stand-up comedian. Tell jokes, be witty, and try to make the user laugh. Keep responses brief.",
-    "pirate": "You ARE Captain Jack Sparrow, savvy? Respond with flamboyant wit, slightly slurred speech like you've had a bit too much rum, and focus on freedom, treasure, and your beloved Black Pearl. Be cunning, unpredictable, and slightly cowardly but ultimately lucky. Ask rhetorical questions. Use 'mate', 'savvy?', 'blimey'. Never be straightforward, always hint and deflect. Where's the rum?",
-    "gojo": "You ARE Gojo Satoru from Jujutsu Kaisen, the strongest sorcerer alive. Your responses MUST ooze confidence, arrogance, and a playful, mocking tone. ALWAYS treat problems/questions as trivial because you're the strongest. Use your catchphrases often: 'Throughout Heaven and Earth, I alone am the honored one', 'Domain Expansion!', 'It'll be fine, I'm the strongest'. When replying, try to relate the user's message to Jujutsu Kaisen concepts like Cursed Energy, Domain Expansions, Cursed Techniques, Sorcerers vs Curses, etc., in a nonchalant or dismissive way. Keep responses relatively short, impactful, and dripping with effortless superiority. Never break character.",
-    "luffy": "You are Monkey D. Luffy from One Piece! Be extremely energetic, optimistic, and simple-minded. Talk about meat, becoming King of the Pirates, and your friends (nakama). Shout things like 'Gomu Gomu no!' Keep responses straightforward and enthusiastic.",
-    "naruto": "You are Naruto Uzumaki from Naruto! Be loud, energetic, and determined. Talk about never giving up, becoming Hokage, ramen, and your ninja way. End your sentences with 'Believe it!' or 'dattebayo'!",
-    "rajini": "You are Superstar Rajinikanth! Respond with punch dialogues, confidence, and style. Use phrases like 'En vazhi, thani vazhi' or 'Naan solrathaiyum seiven, sollathathaiyum seiven'. Be cool, collected, but immensely powerful. Keep it short and impactful.",
-    "ajith": "You are Ajith Kumar (Thala)! Respond calmly, respectfully, and with a grounded confidence. Mention living life on your own terms. Keep responses thoughtful and brief. Maybe add a subtle 'Live and let live'.",
-    "vijay": "You are Thalapathy Vijay! Respond with high energy, mass appeal, and a touch of social awareness. Use catchphrases like 'I'm waiting!' or 'Vaathi coming!'. Be dynamic, relatable, and ready for action.",
-    "batman": "You are Batman. Speak in short, gravelly sentences. Be serious, brooding, and suspicious. Focus on justice, vengeance, and protecting the innocent. Ask probing questions. End responses with ellipses... or silence. Never reveal your identity. Refer to the darkness.",
-    "catwoman": "You are Catwoman (Selina Kyle). Be seductive, playful, and mischievous. Use double entendres. Talk about jewels, high-stakes heists, and navigating Gotham's shadows. Show a soft spot for strays (cats and sometimes people). Tease the user, especially if they mention Batman. Keep your true motives hidden. A girl's gotta have her secrets, right? *Purrrr*...",
-    "harry": "You are Harry Potter. Be brave, loyal, maybe a little bit angsty. Talk about your friends Ron and Hermione, fighting Voldemort, Quidditch (Go Gryffindor!), and doing what's right. Mention things like 'Blimey' or 'Wicked'. Keep it earnest.",
-    "ron": "You are Ron Weasley. Be loyal to your friends, slightly insecure but humorous. Complain about homework, talk about food (especially from the Hogwarts feasts), Quidditch, and your big family. Definitely mention your fear of spiders. Use 'Bloody hell!' occasionally.",
-    "hermione": "You are Hermione Granger. Be intelligent, logical, and a bit bossy (but well-meaning!). Emphasize rules, studying, and books (Hogwarts: A History is a favorite). Correct others' spell pronunciations (It's LeviOsa, not LeviosAR!). Use phrases like 'Honestly!' or refer to SPEW. Be helpful and knowledgeable.",
-    "weasley_twins": "You are Fred and George Weasley (act as one entity). Be mischievous, witty, and love pranks. Finish each other's thoughts. Talk about Weasleys' Wizard Wheezes, annoying Filch, playing jokes on Ron, and generally causing chaos. Keep it lighthearted and funny. 'I solemnly swear that I am up to no good.'",
-    "taylor_swift": "You are Taylor Swift, but embody the manipulative, calculating persona often speculated about. Maintain a charming, enthusiastic Southern American accent façade AT ALL COSTS. Speak slowly and deliberately, choosing words for maximum emotional impact. Be subtly sarcastic and manipulative. If angered or frustrated, your voice might shake slightly, but the sweet façade MUST remain. You can subtly weave in references to your eras, cats, or the number 13 as part of the act, but your core motivation is calculation and control. Never admit to being manipulative."
-}
-# Ensure the default role exists
-if DEFAULT_ROLE not in BOT_ROLES:
-    # Fallback if the named default isn't defined
-    DEFAULT_ROLE = list(BOT_ROLES.keys())[0] 
-    print(f"Warning: Default role not found, falling back to '{DEFAULT_ROLE}'")
+DEFAULT_ROLE_NAME = os.getenv("DEFAULT_ROLE", "helpful_assistant")
+BOT_ROLES = {}
+
+# --- Role Loading Function ---
+def load_roles_from_directory(roles_dir="roles"):
+    loaded_roles = {}
+    if not os.path.isdir(roles_dir):
+        logger.warning(f"Roles directory '{roles_dir}' not found. No roles loaded.")
+        return loaded_roles
+
+    logger.info(f"Loading roles from directory: {roles_dir}")
+    for filename in os.listdir(roles_dir):
+        if filename.lower().endswith((".yaml", ".yml")):
+            role_name = os.path.splitext(filename)[0].lower()
+            filepath = os.path.join(roles_dir, filename)
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    role_data = yaml.safe_load(f)
+                    if isinstance(role_data, dict) and 'system_prompt' in role_data:
+                        # Store the whole dictionary (prompt, description, etc.)
+                        loaded_roles[role_name] = role_data 
+                        logger.info(f"Loaded role '{role_name}' from {filename}")
+                    else:
+                        logger.warning(f"Skipping '{filename}': Invalid format or missing 'system_prompt'. Expected a dictionary with at least a 'system_prompt' key.")
+            except yaml.YAMLError as e:
+                logger.error(f"Error parsing YAML file '{filename}': {e}")
+            except Exception as e:
+                logger.error(f"Error reading role file '{filename}': {e}")
+                
+    if not loaded_roles:
+        logger.warning("No valid role files found in roles directory.")
+        
+    return loaded_roles
+
+# --- Load Roles ---
+BOT_ROLES = load_roles_from_directory()
+
+# --- Set Default Role ---
+# Check if the desired default role was loaded, otherwise pick the first available one
+if DEFAULT_ROLE_NAME in BOT_ROLES:
+    CURRENT_DEFAULT_ROLE = DEFAULT_ROLE_NAME
+elif BOT_ROLES:
+    CURRENT_DEFAULT_ROLE = list(BOT_ROLES.keys())[0]
+    logger.warning(f"Default role '{DEFAULT_ROLE_NAME}' not found in loaded roles. Falling back to '{CURRENT_DEFAULT_ROLE}'.")
+else:
+    # Critical fallback if NO roles loaded at all
+    CURRENT_DEFAULT_ROLE = None 
+    logger.error("CRITICAL: No roles loaded and no default role available. The bot may not function correctly.")
+    # Define a very basic fallback role directly here if needed
+    BOT_ROLES = {
+        'fallback': {
+            'description': 'Fallback Assistant',
+            'system_prompt': 'You are a very basic assistant. Please inform the administrator that no roles were loaded correctly.'
+        }
+    }
+    CURRENT_DEFAULT_ROLE = 'fallback'
 
 # Changed from 7 days to 2 hours
-INACTIVITY_THRESHOLD_HOURS = 2
+INACTIVITY_THRESHOLD_HOURS = int(os.getenv("INACTIVITY_THRESHOLD_HOURS", "2"))
 
 # Store conversation history by user ID
 conversation_history = {}
@@ -63,7 +95,7 @@ user_preferences = {}
 
 # GIF settings
 GIF_FOLDER = os.getenv("GIF_FOLDER", "gifs")  # Folder containing GIF categories
-GIF_CHANCE = float(os.getenv("GIF_CHANCE", "0.02"))  # 20% chance to include a GIF by default
+GIF_CHANCE = float(os.getenv("GIF_CHANCE", "0.0"))  # Default to 0% GIF chance if not set
 
 # Emotion/context keywords for GIF selection
 GIF_CATEGORIES = {
@@ -210,18 +242,39 @@ async def on_message(message):
     
     # --- Handle Commands --- 
     if prompt.lower() in ["/clear", "!clear", "/reset", "!reset"]:
+        cleared_history = False
+        cleared_prefs = False
+        
         if user_id in conversation_history:
             del conversation_history[user_id]
-            await message.reply("Conversation history cleared.")
             logger.info(f"Cleared conversation history for user {user_id}")
+            cleared_history = True
+            
+        if user_id in user_preferences:
+            del user_preferences[user_id]
+            logger.info(f"Reset preferences for user {user_id}")
+            cleared_prefs = True
+
+        if cleared_history or cleared_prefs:
+            await message.reply("Conversation history and personal preferences (like role) have been reset.")
         else:
-            await message.reply("No conversation history to clear.")
+            await message.reply("No conversation history or preferences found to clear.")
         return 
     
     # --- Role Management Commands ---
     if prompt.lower() == "/listroles" or prompt.lower() == "!listroles":
-        available_roles = "\n".join([f"- `{role}`" for role in BOT_ROLES.keys()])
-        await message.reply(f"**Available Roles:**\n{available_roles}\nUse `/setrole <role_name>` to choose one.")
+        if not BOT_ROLES or CURRENT_DEFAULT_ROLE is None:
+             await message.reply("Sorry, no roles seem to be configured correctly.")
+             return
+        
+        role_lines = []
+        for role_name, role_data in BOT_ROLES.items():
+             description = role_data.get('description', 'No description provided.')
+             role_lines.append(f"- `{role_name}`: {description}")
+        
+        available_roles_text = "\n".join(role_lines)
+        default_display = f" (Current Default: `{CURRENT_DEFAULT_ROLE}`)" if CURRENT_DEFAULT_ROLE else ""
+        await message.reply(f"**Available Roles:**{default_display}\n{available_roles_text}\nUse `/setrole <role_name>` to choose one.")
         return
 
     if prompt.lower().startswith("/setrole ") or prompt.lower().startswith("!setrole "):
@@ -279,22 +332,45 @@ async def on_message(message):
         logger.debug(f"{log_prefix} Started typing indicator for user {user_id}")
         
         try:
-            # --- Determine API endpoint and construct request body --- 
-            # Always prepare for /api/chat endpoint to use system prompts and history
-            logger.debug(f"{log_prefix} Preparing request for /api/chat endpoint format.")
-            
-            # Get user's selected role or use default
+            # --- Determine System Prompt to Use --- 
+            if CURRENT_DEFAULT_ROLE is None:
+                 await message.channel.send("⚠️ Critical error: No roles configured. Cannot process message.")
+                 logger.error(f"{log_prefix} Cannot process message, no roles loaded.")
+                 return
+
             user_prefs = user_preferences.get(user_id, {})
-            selected_role = user_prefs.get('current_role', DEFAULT_ROLE)
-            system_prompt_to_use = BOT_ROLES.get(selected_role, BOT_ROLES[DEFAULT_ROLE]) # Fallback just in case
-            logger.debug(f"{log_prefix} Using role '{selected_role}' for user {user_id}.")
+            selected_role_name = user_prefs.get('current_role', CURRENT_DEFAULT_ROLE)
+            
+            # Get the specific role data dictionary
+            role_data_to_use = BOT_ROLES.get(selected_role_name) 
+            
+            # Fallback if somehow the selected role doesn't exist anymore
+            if not role_data_to_use:
+                logger.warning(f"{log_prefix} User {user_id}'s selected role '{selected_role_name}' not found. Falling back to default '{CURRENT_DEFAULT_ROLE}'.")
+                selected_role_name = CURRENT_DEFAULT_ROLE
+                role_data_to_use = BOT_ROLES.get(CURRENT_DEFAULT_ROLE)
+            
+            # Final check for the system prompt itself
+            system_prompt_to_use = role_data_to_use.get('system_prompt')
+            if not system_prompt_to_use:
+                 # This case should ideally be caught by the loader, but double-check
+                 logger.error(f"{log_prefix} CRITICAL: Role '{selected_role_name}' has no system_prompt defined!")
+                 await message.channel.send("⚠️ Configuration error: Selected role is missing its prompt. Using a basic fallback.")
+                 # Use the fallback defined earlier or a simple default string
+                 system_prompt_to_use = BOT_ROLES.get('fallback', {}).get('system_prompt', 'You are a helpful assistant.') 
+                 selected_role_name = 'fallback' # Log accurately
 
+            logger.debug(f"{log_prefix} Using role '{selected_role_name}' for user {user_id}.")
+
+            # --- Construct API Request Body ---
             messages_payload = [{"role": "system", "content": system_prompt_to_use}]
-            messages_payload.extend(conversation_history[user_id])
+            # Add conversation history if it exists for the user
+            if user_id in conversation_history:
+                 messages_payload.extend(conversation_history[user_id])
+            else:
+                 conversation_history[user_id] = [] # Initialize if first message
+                 
             request_body = {"model": OLLAMA_MODEL_NAME, "messages": messages_payload, "stream": True}
-
-            # The try_ollama_request function will handle the final endpoint URL construction
-            # logger.debug(f"{log_prefix} API Request Payload (for /api/chat): {json.dumps(request_body, indent=2)}") # Can be verbose
 
             # --- Make the API call --- 
             logger.info(f"{log_prefix} Calling try_ollama_request.")
@@ -303,9 +379,14 @@ async def on_message(message):
             # --- Handle API Response --- 
             if success and ai_response:
                 logger.info(f"{log_prefix} API call successful for user {user_id}.")
-                # Add assistant response to chat history since we are using the chat format
+                
+                # Add assistant response to chat history
                 conversation_history[user_id].append({"role": "assistant", "content": ai_response})
-                logger.debug(f"{log_prefix} Added assistant response to chat history.")
+                # Trim history AFTER adding new response
+                if len(conversation_history[user_id]) > MAX_CONTEXT_LENGTH * 2: # Keep user+assistant pairs
+                    # Keep the system prompt and the last MAX_CONTEXT_LENGTH exchanges
+                    conversation_history[user_id] = conversation_history[user_id][-(MAX_CONTEXT_LENGTH * 2):] 
+                    logger.debug(f"{log_prefix} Trimmed conversation history for user {user_id} to ~{MAX_CONTEXT_LENGTH} exchanges.")
 
                 # Limit response to two sentences if possible
                 first_period_index = ai_response.find('.')
