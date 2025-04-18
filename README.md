@@ -53,6 +53,9 @@ python ollama_discord_bot.py
 *   `gojo`
 *   `luffy`
 *   `naruto`
+*   `rajini`
+*   `ajith`
+*   `vijay`
 
 (These are defined in the `BOT_ROLES` dictionary in the script).
 
