@@ -16,8 +16,24 @@ from gamification import GamificationManager
 
 load_dotenv()
 
+# --- Logging Setup ---
+# Set up logging early so it's available for role loading
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s [%(name)s] %(message)s')
+logger = logging.getLogger("ollama-discord")
+
+# --- Load Bot Configuration ---
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID"))
+TARGET_CHANNEL_ID_STR = os.getenv("TARGET_CHANNEL_ID")
+if not TARGET_CHANNEL_ID_STR:
+    logger.critical("CRITICAL: TARGET_CHANNEL_ID environment variable is not set!")
+    exit("Missing TARGET_CHANNEL_ID")
+try:
+    TARGET_CHANNEL_ID = int(TARGET_CHANNEL_ID_STR)
+    logger.info(f"Target Channel ID loaded: {TARGET_CHANNEL_ID}")
+except ValueError:
+    logger.critical(f"CRITICAL: TARGET_CHANNEL_ID must be a number. Value: '{TARGET_CHANNEL_ID_STR}'")
+    exit("Invalid TARGET_CHANNEL_ID format")
+
 ALLOWED_USER_IDS = list(map(int, os.getenv("ALLOWED_USER_IDS", "").split(","))) if os.getenv("ALLOWED_USER_IDS") else []
 
 OLLAMA_API_URL = os.getenv("OLLAMA_API_URL")
@@ -27,7 +43,7 @@ SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT")
 MAX_CONTEXT_LENGTH = int(os.getenv("MAX_CONTEXT_LENGTH", "10"))  # Maximum number of messages to keep per user
 
 # --- Bot Roles --- 
-DEFAULT_ROLE_NAME = os.getenv("DEFAULT_ROLE", "helpful_assistant")
+DEFAULT_ROLE_NAME = os.getenv("DEFAULT_ROLE", "sarcastic_therapist")
 BOT_ROLES = {}
 
 # --- Role Loading Function ---
@@ -111,9 +127,6 @@ GIF_CATEGORIES = {
     "farewell": ["goodbye", "bye", "see you", "farewell", "take care", "until next time"],
 }
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s [%(name)s] %(message)s')
-logger = logging.getLogger("ollama-discord")
-
 intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True  # Enable message content intent
@@ -176,13 +189,15 @@ def get_themed_message():
 
 async def check_inactivity_loop():
     await client.wait_until_ready()
+    logger.info(f"Inactivity checks will run on channel ID: {TARGET_CHANNEL_ID}")
+    
     while not client.is_closed():
         try:
-            logger.debug("Checking for inactivity in channel.")
+            logger.debug("Checking for inactivity in target channel.")
             channel = client.get_channel(TARGET_CHANNEL_ID)
             if not channel:
-                logger.error(f"Could not find channel with ID {TARGET_CHANNEL_ID}")
-                await asyncio.sleep(3600)
+                logger.error(f"Could not find target channel with ID {TARGET_CHANNEL_ID}")
+                await asyncio.sleep(3600) # Wait an hour before trying again
                 continue
 
             messages = [msg async for msg in channel.history(limit=1)]
@@ -217,9 +232,14 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
+    # Log the incoming message's channel ID before any checks
+    # logger.debug(f"Received message in channel ID: {message.channel.id} (Type: {type(message.channel.id)})") # Keep commented out unless debugging needed
+    
     # Ignore bots and messages outside the target channel
     if message.author.bot or message.channel.id != TARGET_CHANNEL_ID:
-        logger.debug(f"Message ignored: bot={message.author.bot}, channel_id={message.channel.id} (expected {TARGET_CHANNEL_ID})")
+        # Log only if it wasn't the bot itself in a non-target channel
+        if not message.author.bot:
+             logger.debug(f"Message ignored: bot={message.author.bot}, channel_id={message.channel.id} (Expected: {TARGET_CHANNEL_ID})")
         return
 
     # --- Gamification: Award XP for every message ---
@@ -284,8 +304,14 @@ async def on_message(message):
                 if user_id not in user_preferences:
                     user_preferences[user_id] = {}
                 user_preferences[user_id]['current_role'] = role_name
-                await message.reply(f"Okay, I'll act as a `{role_name}` for you now.")
-                logger.info(f"User {user_id} set role to '{role_name}'")
+                
+                # Also clear conversation history for a clean slate with the new role
+                if user_id in conversation_history:
+                    del conversation_history[user_id]
+                    logger.info(f"Cleared conversation history for user {user_id} due to role change.")
+                    
+                await message.reply(f"Okay, I'll act as a `{role_name}` for you now. Your conversation history has been cleared for a fresh start.")
+                logger.info(f"User {user_id} set role to '{role_name}' and history cleared.")
             else:
                 await message.reply(f"Sorry, '{role_name}' is not a valid role. Use `/listroles` to see available roles.")
         except IndexError:
@@ -362,15 +388,21 @@ async def on_message(message):
 
             logger.debug(f"{log_prefix} Using role '{selected_role_name}' for user {user_id}.")
 
-            # --- Construct API Request Body ---
-            messages_payload = [{"role": "system", "content": system_prompt_to_use}]
-            # Add conversation history if it exists for the user
-            if user_id in conversation_history:
-                 messages_payload.extend(conversation_history[user_id])
-            else:
-                 conversation_history[user_id] = [] # Initialize if first message
+            # --- Construct API Request Body (Reverted) --- 
+            messages_payload = []
+            # 1. Role System Prompt
+            messages_payload.append({"role": "system", "content": system_prompt_to_use})
+            
+            # 2. Conversation History 
+            # Add user prompt first before history for this message
+            messages_payload.append({"role": "user", "content": prompt})
+            # Add history if available
+            if user_id in conversation_history and conversation_history[user_id]:
+                 messages_payload.extend(conversation_history[user_id]) 
+            # History list initialization happens later if needed
                  
             request_body = {"model": OLLAMA_MODEL_NAME, "messages": messages_payload, "stream": True}
+            # logger.debug(f"{log_prefix} API Request Payload: {json.dumps(request_body, indent=2)}")
 
             # --- Make the API call --- 
             logger.info(f"{log_prefix} Calling try_ollama_request.")
@@ -380,11 +412,15 @@ async def on_message(message):
             if success and ai_response:
                 logger.info(f"{log_prefix} API call successful for user {user_id}.")
                 
-                # Add assistant response to chat history
+                # Add user prompt AND assistant response to chat history
+                # Ensure history exists before appending
+                if user_id not in conversation_history:
+                     conversation_history[user_id] = []
+                conversation_history[user_id].append({"role": "user", "content": prompt})
                 conversation_history[user_id].append({"role": "assistant", "content": ai_response})
-                # Trim history AFTER adding new response
-                if len(conversation_history[user_id]) > MAX_CONTEXT_LENGTH * 2: # Keep user+assistant pairs
-                    # Keep the system prompt and the last MAX_CONTEXT_LENGTH exchanges
+                
+                # Trim history AFTER adding new pair
+                if len(conversation_history[user_id]) > MAX_CONTEXT_LENGTH * 2: 
                     conversation_history[user_id] = conversation_history[user_id][-(MAX_CONTEXT_LENGTH * 2):] 
                     logger.debug(f"{log_prefix} Trimmed conversation history for user {user_id} to ~{MAX_CONTEXT_LENGTH} exchanges.")
 
